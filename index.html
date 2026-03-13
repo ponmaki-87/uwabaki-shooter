@@ -1,0 +1,1120 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>俺の上履きどこ行った！</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;background:#1C1C28;display:flex;align-items:center;justify-content:center;overflow:hidden;touch-action:none;user-select:none;-webkit-user-select:none}
+canvas{display:block}
+</style>
+</head>
+<body>
+<canvas id="gc"></canvas>
+<script>
+(function(){'use strict';
+
+/* ======================================================
+   セットアップ
+====================================================== */
+const C=document.getElementById('gc');
+const X=C.getContext('2d');
+const W=Math.min(window.innerWidth,400);
+const H=Math.min(window.innerHeight,860);
+C.width=W; C.height=H;
+
+const HUD=92, CTOP=HUD+6, CBOT=HUD+168, FLOOR=H-55;
+const PX=W/2, PY=FLOOR-55, WL=10, WR=W-10, SPD=13;
+
+/* ======================================================
+   アイテム定義
+====================================================== */
+const IR=[22,10,15,21,25,29];
+const IN=['上履き','卓球','シャトル','ドッジ','バレー','バスケ'];
+const EP=[0,10,30,60,100,200];
+
+/* ======================================================
+   ステージ生成（無限）
+====================================================== */
+function genStage(n){
+  const goal=Math.min(n,10);
+  const shots=Math.max(goal+2, goal+9-Math.floor(n*0.28));
+  const maxBT=Math.min(4,Math.floor(n/2));
+  const nBalls=3+Math.floor(n*0.7);
+  const list=new Array(goal).fill(0);
+  for(let i=0;i<nBalls;i++) list.push(1+Math.floor(Math.random()*(maxBT+1)));
+  return{n,goal,shots,list};
+}
+
+/* ======================================================
+   状態
+====================================================== */
+let scene='title'; // title|mode|play|clearAnim|overAnim|endless|endlessOver
+let mode='normal';
+let stN=1, shots=0, got=0, goal=1, score=0;
+let fr=0, animT=0;
+let objs=[], proj=null, parts=[], pops=[], drops=[];
+let aimA=-Math.PI/2, aimed=false, ptrDown=false, joy=0;
+let teachX=W+120, teachAnger=0;
+// Endless
+let eWave=0, eShots=12, eScore=0;
+
+/* ======================================================
+   ユーティリティ
+====================================================== */
+const rnd=(a,b)=>a+Math.random()*(b-a);
+function shuffle(a){for(let i=a.length-1;i>0;i--){const j=Math.random()*(i+1)|0;[a[i],a[j]]=[a[j],a[i]];}}
+function rr(x,y,w,h,r){X.beginPath();X.moveTo(x+r,y);X.arcTo(x+w,y,x+w,y+r,r);X.arcTo(x+w,y+h,x+w-r,y+h,r);X.arcTo(x,y+h,x,y+h-r,r);X.arcTo(x,y,x+r,y,r);X.closePath();}
+function burst(x,y,col,n,big){for(let i=0;i<n;i++){const a=Math.PI*2*i/n+rnd(-0.3,0.3),s=rnd(big?3:1.5,big?9:5);parts.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,r:rnd(big?4:2,big?10:6),col,life:rnd(24,55)|0,max:55});}}
+function popTxt(x,y,str,col){pops.push({x,y,str,col:col||'#FFD54F',life:70,vy:-1.4});}
+
+/* ======================================================
+   ゲーム初期化
+====================================================== */
+function initStage(n){
+  stN=n||1;
+  const s=genStage(stN);
+  shots=s.shots; got=0; goal=s.goal;
+  proj=null; parts=[]; pops=[]; drops=[];
+  aimed=false; joy=0; teachX=W+120; teachAnger=0; objs=[];
+  const list=[...s.list]; shuffle(list);
+  list.forEach(t=>{
+    const r=IR[t]; let x,y,tries=0;
+    do{x=rnd(WL+r+8,WR-r-8);y=rnd(CTOP+r+12,CBOT-r-12);tries++;}
+    while(tries<500&&objs.some(o=>Math.hypot(x-o.x,y-o.y)<r+o.r+14));
+    objs.push({t,x,y,r,vx:0,vy:0,bob:rnd(0,Math.PI*2),hit:0});
+  });
+}
+function initEndless(){
+  eWave=1; eShots=5; eScore=0;
+  proj=null; parts=[]; pops=[]; drops=[];
+  aimed=false; joy=0; teachX=W+120; teachAnger=0; objs=[];
+  got=0;
+  spawnWave(eWave);
+}
+function spawnWave(w){
+  const n=4+Math.floor(w*0.6);
+  const maxBT=Math.min(4,Math.floor(w/2));
+  const goal_n=2+Math.floor(w*0.4);
+  const list=new Array(goal_n).fill(0);
+  for(let i=0;i<n;i++) list.push(1+Math.floor(Math.random()*(maxBT+1)));
+  shuffle(list);
+  list.forEach(t=>{
+    const r=IR[t]; let x,y,tries=0;
+    do{x=rnd(WL+r+8,WR-r-8);y=rnd(CTOP+r+12,CBOT-r-12);tries++;}
+    while(tries<500&&objs.some(o=>Math.hypot(x-o.x,y-o.y)<r+o.r+14));
+    objs.push({t,x,y,r,vx:0,vy:0,bob:rnd(0,Math.PI*2),hit:0});
+  });
+}
+
+/* ======================================================
+   描画 ── 体育館背景
+====================================================== */
+function drawGym(){
+  // 壁全体（暗いグレー）
+  X.fillStyle='#5A5850'; X.fillRect(0,HUD,W,FLOOR-HUD);
+  // 壁の横ライン（コンクリートブロック感）
+  X.fillStyle='rgba(30,28,24,0.35)';
+  for(let y=HUD+38;y<FLOOR;y+=44){X.fillRect(0,y,W,9);}
+  X.fillStyle='rgba(255,255,240,0.06)';
+  for(let y=HUD+38;y<FLOOR;y+=44){X.fillRect(0,y+9,W,2);}
+  // 左右壁柱
+  X.fillStyle='#3E3C36'; X.fillRect(0,HUD,WL,FLOOR-HUD); X.fillRect(WR,HUD,W-WR,FLOOR-HUD);
+  // 高窓（壁の中段・天井エリアより下）
+  const wy = CBOT + Math.floor((FLOOR - CBOT) * 0.25); // 壁ゾーンの上寄り
+  const wh = 52, ww = W*0.11;
+  [W*0.06, W*0.83].forEach(wx=>{
+    // 窓枠
+    X.fillStyle='#2E2C28'; rr(wx-3,wy-3,ww+6,wh+6,4); X.fill();
+    // ガラス（暗い外）
+    X.fillStyle='#3A4850'; rr(wx,wy,ww,wh,2); X.fill();
+    // 光の反射
+    X.fillStyle='rgba(160,200,220,0.18)'; rr(wx+2,wy+2,ww-4,wh/2-2,2); X.fill();
+    // 中桟
+    X.fillStyle='#2E2C28';
+    X.fillRect(wx,wy+wh/2-1.5,ww,3);
+    X.fillRect(wx+ww/2-1.5,wy,3,wh);
+  });
+  // 天井スラブ（濃いグレー）
+  X.fillStyle='#383630'; X.fillRect(0,CTOP,W,14);
+  // 梁と蛍光灯
+  for(let bx=32;bx<W;bx+=68){
+    // 梁
+    X.fillStyle='#2C2A26'; X.fillRect(bx-6,CTOP+14,12,CBOT-CTOP-14);
+    X.fillStyle='#222018'; X.fillRect(bx-12,CTOP+12,24,8);
+    X.fillStyle='#222018'; X.fillRect(bx-12,CBOT-12,24,12);
+    // 蛍光灯本体
+    X.fillStyle='#C8C8B8'; rr(bx-8,CTOP+15,16,26,3); X.fill();
+    // 蛍光灯の光（狭い範囲で強く）
+    const lg=X.createRadialGradient(bx,CTOP+28,0,bx,CTOP+28,55);
+    lg.addColorStop(0,'rgba(255,255,210,0.38)');
+    lg.addColorStop(0.4,'rgba(255,255,200,0.12)');
+    lg.addColorStop(1,'rgba(255,255,200,0)');
+    X.fillStyle=lg; X.beginPath(); X.arc(bx,CTOP+28,55,0,Math.PI*2); X.fill();
+    // 灯体の白い光点
+    X.fillStyle='#FFFFF0'; X.beginPath(); X.arc(bx,CTOP+26,5,0,Math.PI*2); X.fill();
+  }
+  // 天井ゾーン下端ライン
+  X.fillStyle='rgba(0,0,0,0.3)'; X.fillRect(WL,CBOT-3,WR-WL,5);
+  // 床（木材）— そのまま維持
+  const fg=X.createLinearGradient(0,FLOOR,0,H);
+  fg.addColorStop(0,'#C88828'); fg.addColorStop(0.6,'#B47820'); fg.addColorStop(1,'#8A5C10');
+  X.fillStyle=fg; X.fillRect(0,FLOOR,W,H-FLOOR);
+  // 床板縦線
+  X.fillStyle='rgba(100,58,8,0.28)';
+  for(let fx=20;fx<W;fx+=20){X.fillRect(fx-1,FLOOR,2,H-FLOOR);}
+  // コートライン
+  X.fillStyle='rgba(255,255,255,0.5)';
+  X.fillRect(W/2-1.5,FLOOR,3,H-FLOOR);
+  X.fillRect(W*0.07,FLOOR,3,H-FLOOR); X.fillRect(W*0.93-3,FLOOR,3,H-FLOOR);
+  // センターサークル
+  X.strokeStyle='rgba(255,255,255,0.4)'; X.lineWidth=3; X.setLineDash([6,4]);
+  X.beginPath(); X.arc(W/2,H-20,24,0,Math.PI*2); X.stroke(); X.setLineDash([]);
+}
+
+/* ======================================================
+   描画 ── HUD
+====================================================== */
+function drawHUD(title,msg,shotsN,scoreN,gotN,goalN,isEndless){
+  X.fillStyle='#252533'; X.fillRect(0,0,W,HUD);
+  X.fillStyle='#383848'; X.fillRect(0,HUD-3,W,3);
+  X.font='bold 12px monospace'; X.fillStyle='#80D4CC'; X.textAlign='left'; X.textBaseline='top';
+  X.fillText(title,14,5);
+  X.font='11px sans-serif'; X.fillStyle='#A0AABB'; X.fillText(msg,14,22);
+  X.textAlign='right'; X.font='bold 13px monospace'; X.fillStyle='#FFFFFF'; X.fillText('蹴り: '+shotsN,W-14,5);
+  X.font='10px monospace'; X.fillStyle='#90A4AE'; X.fillText('SCORE '+scoreN,W-14,22);
+  if(!isEndless){
+    X.textAlign='center'; X.font='18px serif';
+    for(let i=0;i<goalN;i++) X.fillText(i<gotN?'🥿':'⬜',W/2-(goalN-1)*11+i*22,3);
+  } else {
+    X.textAlign='center'; X.font='bold 11px sans-serif'; X.fillStyle='#FFD54F';
+    X.fillText('WAVE '+eWave,W/2,6);
+    X.font='10px sans-serif'; X.fillStyle='#90A4AE'; X.fillText('上履き集めてシュートを稼げ！',W/2,22);
+  }
+  // 蹴りゲージ
+  const maxSh=isEndless?20:genStage(stN).shots;
+  const bw=(W-28)/Math.max(shotsN,8);
+  for(let i=0;i<shotsN;i++){
+    X.fillStyle=`hsl(${Math.max(0,110-i*7)},68%,52%)`;
+    rr(14+i*bw,HUD-16,bw-2,11,2); X.fill();
+  }
+  if(shotsN===0){X.fillStyle='#37474F'; rr(14,HUD-16,W-28,11,2); X.fill();}
+}
+
+/* ======================================================
+   描画 ── エイムライン
+====================================================== */
+function drawAim(){
+  if(!aimed||(scene!=='play'&&scene!=='endless')) return;
+  let ax=PX,ay=PY-28,avx=Math.cos(aimA),avy=Math.sin(aimA);
+  const g=X.createLinearGradient(PX,PY,ax+avx*220,ay+avy*220);
+  g.addColorStop(0,'rgba(255,220,60,0.92)'); g.addColorStop(1,'rgba(255,220,60,0.04)');
+  X.save(); X.strokeStyle=g; X.lineWidth=2.5; X.lineCap='round'; X.setLineDash([7,5]);
+  X.beginPath(); X.moveTo(ax,ay);
+  for(let i=0;i<36;i++){
+    ax+=avx*9; ay+=avy*9;
+    if(ax<WL+5){ax=WL+5;avx=Math.abs(avx);} if(ax>WR-5){ax=WR-5;avx=-Math.abs(avx);}
+    if(ay<CTOP) break; X.lineTo(ax,ay);
+  }
+  X.stroke(); X.setLineDash([]);
+  const ta=Math.atan2(avy,avx);
+  X.save(); X.translate(ax,ay); X.rotate(ta);
+  X.fillStyle='rgba(255,220,60,0.88)';
+  X.beginPath(); X.moveTo(11,0); X.lineTo(-7,7); X.lineTo(-7,-7); X.closePath(); X.fill();
+  X.restore(); X.restore();
+}
+
+/* ======================================================
+   描画 ── アイテム（ベタ塗り・縁取りなし）
+====================================================== */
+function drawShoeFlat(r,tint){
+  // 横長に描く：幅52px × 高さ20px 固定サイズ
+  X.save();
+
+  // ① ソール（底の台）
+  X.fillStyle='#4A70B8';
+  X.beginPath();
+  X.moveTo(-26, 7);
+  X.lineTo( 26, 7);
+  X.lineTo( 24,12);
+  X.lineTo(-24,12);
+  X.closePath(); X.fill();
+
+  // ② 本体（白）横長シルエット
+  X.fillStyle = tint||'#F2F0EA';
+  X.beginPath();
+  X.moveTo(-24, 8);      // かかと底
+  X.lineTo(-24, 0);      // かかと上（垂直）
+  X.lineTo(-22,-10);     // かかと上端
+  X.lineTo( -6,-14);     // 甲の山（頂点）
+  X.lineTo( 12, -8);     // つま先への下り
+  X.lineTo( 26,  0);     // つま先先端上
+  X.lineTo( 26,  7);     // つま先先端下
+  X.closePath(); X.fill();
+
+  // ③ 青いつま先（右1/3）
+  X.fillStyle='#4A70B8';
+  X.beginPath();
+  X.moveTo( 10, 7);
+  X.lineTo( 10, -7);
+  X.lineTo( 12, -8);
+  X.lineTo( 26,  0);
+  X.lineTo( 26,  7);
+  X.closePath(); X.fill();
+
+  // ④ 白いゴムバンド（甲の真ん中あたり）
+  X.fillStyle='#DDDBD5';
+  X.beginPath();
+  X.moveTo(-8, -9);
+  X.lineTo( 4, -9);
+  X.lineTo( 5, -3);
+  X.lineTo(-7, -3);
+  X.closePath(); X.fill();
+
+  X.restore();
+}
+
+function drawPingFlat(r){
+  // 本体：鮮やかなオレンジ（卓球ボールらしく）
+  X.fillStyle='#F97316';
+  X.beginPath(); X.arc(0,0,r,0,Math.PI*2); X.fill();
+  // 影側（下を少し暗く）
+  X.fillStyle='rgba(180,60,0,0.28)';
+  X.beginPath(); X.arc(r*0.18,r*0.22,r*0.72,0,Math.PI*2); X.fill();
+  // ハイライト
+  X.fillStyle='rgba(255,220,170,0.75)';
+  X.beginPath(); X.arc(-r*0.3,-r*0.32,r*0.32,0,Math.PI*2); X.fill();
+  // 中央の縫い目ライン（白い曲線）
+  X.strokeStyle='rgba(255,255,255,0.7)'; X.lineWidth=r*0.14; X.lineCap='round';
+  X.beginPath(); X.arc(r*0.1,0,r*0.75, -0.6, 0.6); X.stroke();
+  X.beginPath(); X.arc(-r*0.1,0,r*0.75, Math.PI-0.6, Math.PI+0.6); X.stroke();
+}
+
+
+function drawShuttleFlat(r){
+  X.save();
+  const cork_y = r * 0.52;
+  const cork_r = r * 0.42;
+  const tip_y  = -r * 0.88;
+  const spread = r * 0.95;
+  const root_y = cork_y - cork_r + 2;
+  const N = 7;
+
+  // 羽根（コルク根元から上に扇形に広がる）
+  for(let i = 0; i < N; i++){
+    const t = i / (N - 1);
+    const tipX = (t - 0.5) * spread * 2;
+    X.fillStyle = i % 2 === 0 ? '#EDEAE2' : '#F8F5EE';
+    X.beginPath();
+    X.moveTo(0, root_y);
+    X.quadraticCurveTo(tipX * 0.4, (root_y + tip_y) * 0.5, tipX, tip_y);
+    X.lineTo(tipX + spread * 0.18, tip_y + r * 0.12);
+    X.quadraticCurveTo(tipX * 0.5, (root_y + tip_y) * 0.5 + 4, 0, root_y);
+    X.closePath(); X.fill();
+  }
+  // 羽根の筋線
+  X.strokeStyle = '#C0B898'; X.lineWidth = 0.9;
+  for(let i = 0; i < N; i++){
+    const t = i / (N - 1);
+    const tipX = (t - 0.5) * spread * 2;
+    X.beginPath();
+    X.moveTo(0, root_y);
+    X.quadraticCurveTo(tipX * 0.4, (root_y + tip_y) * 0.5, tipX, tip_y);
+    X.stroke();
+  }
+  // 先端リム（羽根をつなぐ輪）
+  X.fillStyle = '#D0C8A8';
+  X.beginPath();
+  X.ellipse(0, tip_y + r * 0.06, spread, r * 0.12, 0, 0, Math.PI * 2);
+  X.fill();
+
+  // コルク
+  X.fillStyle = '#C8874A';
+  X.beginPath(); X.arc(0, cork_y, cork_r, 0, Math.PI * 2); X.fill();
+  X.fillStyle = '#9A5C28';
+  X.beginPath(); X.arc(0, cork_y, cork_r * 0.65, 0, Math.PI * 2); X.fill();
+  X.fillStyle = 'rgba(255,200,130,0.5)';
+  X.beginPath(); X.arc(-cork_r * 0.28, cork_y - cork_r * 0.28, cork_r * 0.3, 0, Math.PI * 2); X.fill();
+
+  X.restore();
+}
+
+
+function drawDodgeFlat(r){
+  X.fillStyle='#E03030';
+  X.beginPath(); X.arc(0,0,r,0,Math.PI*2); X.fill();
+  X.fillStyle='rgba(255,155,155,0.44)';
+  X.beginPath(); X.arc(-r*0.3,-r*0.32,r*0.36,0,Math.PI*2); X.fill();
+}
+
+function drawVolleyFlat(r){
+  X.fillStyle='#F4F3EC'; X.beginPath(); X.arc(0,0,r,0,Math.PI*2); X.fill();
+  // 青パネル
+  X.fillStyle='#1555B0';
+  X.beginPath(); X.moveTo(-r,0); X.arc(0,0,r,Math.PI,Math.PI*4/3); X.lineTo(0,0); X.fill();
+  X.beginPath(); X.moveTo(r,0); X.arc(0,0,r,0,-Math.PI/3,true); X.lineTo(0,0); X.fill();
+  // 黄パネル
+  X.fillStyle='#FFCC00';
+  X.beginPath(); X.moveTo(0,-r); X.arc(0,0,r,-Math.PI/2,-Math.PI*5/6,true); X.lineTo(0,0); X.fill();
+  X.beginPath(); X.moveTo(0,r); X.arc(0,0,r,Math.PI/2,Math.PI/6,true); X.lineTo(0,0); X.fill();
+  // ハイライト
+  X.fillStyle='rgba(255,255,255,0.35)';
+  X.beginPath(); X.arc(-r*0.27,-r*0.29,r*0.28,0,Math.PI*2); X.fill();
+}
+
+function drawBasketFlat(r){
+  // 本体
+  X.fillStyle='#E85000';
+  X.beginPath(); X.arc(0,0,r,0,Math.PI*2); X.fill();
+  // 影側
+  X.fillStyle='rgba(120,30,0,0.25)';
+  X.beginPath(); X.arc(r*0.2,r*0.25,r*0.78,0,Math.PI*2); X.fill();
+  // ハイライト
+  X.fillStyle='rgba(255,180,100,0.55)';
+  X.beginPath(); X.arc(-r*0.28,-r*0.3,r*0.3,0,Math.PI*2); X.fill();
+  // 縫い目（黒い細い弧線）
+  X.strokeStyle='#1A1A1A'; X.lineWidth=r*0.1; X.lineCap='round';
+  // 横一直線
+  X.beginPath(); X.moveTo(-r,0); X.lineTo(r,0); X.stroke();
+  // 縦一直線
+  X.beginPath(); X.moveTo(0,-r); X.lineTo(0,r); X.stroke();
+  // 左カーブ
+  X.beginPath(); X.arc(-r*0.52,0,r*0.65,-0.7,0.7); X.stroke();
+  // 右カーブ
+  X.beginPath(); X.arc(r*0.52,0,r*0.65,Math.PI-0.7,Math.PI+0.7); X.stroke();
+}
+
+function drawItem(o){
+  const wa=o.hit>0?Math.sin(o.hit*0.38)*0.18:0;
+  X.save(); X.translate(o.x,o.y); X.rotate(wa);
+
+  if(o.t===0){
+    // 上履きだけ天井から糸で吊るす
+    const ropeLen = CTOP - o.y + o.r; // 天井まで
+    X.strokeStyle='rgba(200,180,140,0.75)'; X.lineWidth=1.5; X.lineCap='round';
+    X.beginPath(); X.moveTo(0,-o.r); X.lineTo(0,ropeLen); X.stroke();
+    // フック
+    X.fillStyle='#7A6A50';
+    X.beginPath(); X.arc(0,ropeLen,3,0,Math.PI*2); X.fill();
+    // 少し傾けてぶら下がり感
+    X.rotate(0.15);
+  }
+
+  switch(o.t){
+    case 0:drawShoeFlat(o.r);break;
+    case 1:drawPingFlat(o.r);break;
+    case 2:drawShuttleFlat(o.r);break;
+    case 3:drawDodgeFlat(o.r);break;
+    case 4:drawVolleyFlat(o.r);break;
+    case 5:drawBasketFlat(o.r);break;
+  }
+  X.font='7px monospace'; X.textAlign='center'; X.textBaseline='top';
+  X.fillStyle='rgba(220,220,200,0.65)'; X.fillText(IN[o.t],0,o.r+3);
+  X.restore();
+}
+
+/* ======================================================
+   描画 ── キャラクター
+====================================================== */
+/* ── 顔パーツ共通（cx,cy=頭の中心、r=頭半径） ── */
+function drawFaceBase(r, skinCol){
+  X.fillStyle = skinCol||'#F5C8A0';
+  X.beginPath(); X.arc(0,0,r,0,Math.PI*2); X.fill();
+}
+function drawHairShort(r, col){
+  X.fillStyle = col||'#2E1A0A';
+  // 頭頂部のキャップ（r の上1/3だけ、おかっぱにならない高さ）
+  X.beginPath();
+  X.arc(0,0,r+1, Math.PI*1.18, Math.PI*1.82, false); // 上の浅い弧（左→上→右）
+  X.lineTo(r*0.88, -r*0.26); // 右耳上あたりで終わる
+  X.arc(0,0,r*0.55, -0.3, Math.PI+0.3, false); // 内側の弧（逆側）
+  X.closePath(); X.fill();
+  // 前髪（センター寄りの短いツンツン毛）
+  [-9,-2,7].forEach((dx,i)=>{
+    X.beginPath();
+    X.ellipse(dx,-r+3+i%2*2, 4.5,6, dx*0.07,0,Math.PI*2); X.fill();
+  });
+  // もみあげ（ほんの少し、顔の横ラインより上）
+  X.beginPath(); X.arc(-r*0.78,-r*0.05,5,0,Math.PI*2); X.fill();
+  X.beginPath(); X.arc(r*0.78,-r*0.05,5,0,Math.PI*2); X.fill();
+}
+function drawEyes(r, lookDx, lookDy, happy){
+  const ex=r*0.32, ey=-r*0.08;
+  if(happy){
+    // 笑い目（へ字）
+    X.fillStyle='#1A1818';
+    X.beginPath(); X.arc(-ex,ey,r*0.19,0,Math.PI*2); X.fill();
+    X.beginPath(); X.arc(ex,ey,r*0.19,0,Math.PI*2); X.fill();
+    X.fillStyle='#F5C8A0'; // まぶた
+    X.beginPath(); X.ellipse(-ex,ey-r*0.1,r*0.2,r*0.1,0,0,Math.PI*2); X.fill();
+    X.beginPath(); X.ellipse(ex,ey-r*0.1,r*0.2,r*0.1,0,0,Math.PI*2); X.fill();
+  } else {
+    // 白目
+    X.fillStyle='#FFFFFF';
+    X.beginPath(); X.arc(-ex,ey,r*0.2,0,Math.PI*2); X.fill();
+    X.beginPath(); X.arc(ex,ey,r*0.2,0,Math.PI*2); X.fill();
+    // 黒目（視線方向）
+    X.fillStyle='#1A1818';
+    X.beginPath(); X.arc(-ex+lookDx*r*0.08,ey+lookDy*r*0.08,r*0.13,0,Math.PI*2); X.fill();
+    X.beginPath(); X.arc(ex+lookDx*r*0.08,ey+lookDy*r*0.08,r*0.13,0,Math.PI*2); X.fill();
+    // ハイライト
+    X.fillStyle='#FFFFFF';
+    X.beginPath(); X.arc(-ex+lookDx*r*0.06-r*0.05,ey+lookDy*r*0.06-r*0.08,r*0.055,0,Math.PI*2); X.fill();
+    X.beginPath(); X.arc(ex+lookDx*r*0.06-r*0.05,ey+lookDy*r*0.06-r*0.08,r*0.055,0,Math.PI*2); X.fill();
+  }
+}
+function drawCheeks(r){
+  X.fillStyle='rgba(248,120,100,0.38)';
+  X.beginPath(); X.arc(-r*0.55,r*0.15,r*0.28,0,Math.PI*2); X.fill();
+  X.beginPath(); X.arc(r*0.55,r*0.15,r*0.28,0,Math.PI*2); X.fill();
+}
+function drawMouth(r, happy){
+  X.strokeStyle='#9A5030'; X.lineWidth=r*0.1; X.lineCap='round';
+  X.beginPath();
+  if(happy) X.arc(0,r*0.28,r*0.3,0.1,Math.PI-0.1);
+  else      X.arc(0,r*0.25,r*0.22,0.18,Math.PI-0.18);
+  X.stroke();
+}
+
+function drawPlayer(){
+  const jb=joy>0?-Math.abs(Math.sin(fr*0.25))*(joy/50)*15:0;
+  const happy=joy>0;
+  X.save(); X.translate(PX,PY+jb);
+
+  // 影
+  X.fillStyle='rgba(0,0,0,0.10)';
+  X.beginPath(); X.ellipse(0,58,22,7,0,0,Math.PI*2); X.fill();
+
+  // 上履き（足元）
+  X.fillStyle='#ECEAE4';
+  X.beginPath(); X.ellipse(-8,55,12,6,0,0,Math.PI*2); X.fill();
+  X.beginPath(); X.ellipse(8,55,12,6,0,0,Math.PI*2); X.fill();
+  X.fillStyle='#B8C8E4';
+  X.beginPath(); X.ellipse(-1,56,5,4.5,0,0,Math.PI*2); X.fill();
+  X.beginPath(); X.ellipse(15,56,5,4.5,0,0,Math.PI*2); X.fill();
+
+  // 脚
+  X.fillStyle='#8A1420';
+  X.beginPath(); X.ellipse(-8,38,6,16,0,0,Math.PI*2); X.fill();
+  X.beginPath(); X.ellipse(8,38,6,16,0,0,Math.PI*2); X.fill();
+
+  // 腕
+  X.fillStyle='#8A1420';
+  X.save(); X.translate(-20,6); X.rotate(aimed?-0.55:-0.2);
+  X.beginPath(); X.ellipse(0,13,6,14,0,0,Math.PI*2); X.fill(); X.restore();
+  X.save(); X.translate(20,6); X.rotate(aimed?0.55:0.25);
+  X.beginPath(); X.ellipse(0,13,6,14,0,0,Math.PI*2); X.fill(); X.restore();
+
+  // 胴体
+  X.fillStyle='#9A1822';
+  X.beginPath(); X.ellipse(0,8,18,20,0,0,Math.PI*2); X.fill();
+  X.fillStyle='rgba(255,255,255,0.82)'; X.font='bold 14px monospace';
+  X.textAlign='center'; X.textBaseline='middle'; X.fillText('7',0,8);
+
+  // 首
+  X.fillStyle='#F0BC8A'; X.beginPath(); X.rect(-5,-7,10,12); X.fill();
+
+  // 耳
+  X.fillStyle='#DDAA78';
+  X.beginPath(); X.arc(-19,-18,7,0,Math.PI*2); X.fill();
+  X.beginPath(); X.arc(19,-18,7,0,Math.PI*2); X.fill();
+
+  // 頭（友達と同じ構造）
+  X.save(); X.translate(0,-18);
+  drawFaceBase(20,'#F0BC8A');
+  drawCheeks(20);
+  // 目
+  if(happy){
+    X.fillStyle='#1A1818';
+    X.beginPath(); X.arc(-6,-2,3.5,0,Math.PI*2); X.fill();
+    X.beginPath(); X.arc(6,-2,3.5,0,Math.PI*2); X.fill();
+    X.fillStyle='#F0BC8A';
+    X.beginPath(); X.ellipse(-6,-4,4,2,0,0,Math.PI*2); X.fill();
+    X.beginPath(); X.ellipse(6,-4,4,2,0,0,Math.PI*2); X.fill();
+  } else {
+    X.fillStyle='#FFFFFF';
+    X.beginPath(); X.arc(-6,-2,4,0,Math.PI*2); X.fill();
+    X.beginPath(); X.arc(6,-2,4,0,Math.PI*2); X.fill();
+    const lx=Math.cos(aimA)*1.5, ly=Math.sin(aimA)*1.5;
+    X.fillStyle='#1A1818';
+    X.beginPath(); X.arc(-6+lx,-2+ly,2.6,0,Math.PI*2); X.fill();
+    X.beginPath(); X.arc(6+lx,-2+ly,2.6,0,Math.PI*2); X.fill();
+    X.fillStyle='#FFFFFF';
+    X.beginPath(); X.arc(-6+lx-1,-3+ly,1,0,Math.PI*2); X.fill();
+    X.beginPath(); X.arc(6+lx-1,-3+ly,1,0,Math.PI*2); X.fill();
+  }
+  // 口
+  X.strokeStyle='#8A4820'; X.lineWidth=2.5; X.lineCap='round';
+  X.beginPath(); X.arc(0,6,6,0.1,Math.PI-0.1); X.stroke();
+  // 髪（友達と同じ：上半円のみ）
+  X.fillStyle='#2E1A0A';
+  X.beginPath(); X.arc(0,0,21,Math.PI,0,false); X.closePath(); X.fill();
+  X.restore();
+
+  X.restore();
+}
+
+function drawTeacher(tx,anger){
+  X.save(); X.translate(tx,PY);
+  // 影
+  X.fillStyle='rgba(0,0,0,0.1)'; X.beginPath(); X.ellipse(0,58,22,7,0,0,Math.PI*2); X.fill();
+  // 靴
+  X.fillStyle='#2A2A2A';
+  X.beginPath(); X.ellipse(-8,55,12,6,0,0,Math.PI*2); X.fill();
+  X.beginPath(); X.ellipse(8,55,12,6,0,0,Math.PI*2); X.fill();
+  // 脚
+  X.fillStyle='#3A4A5A';
+  X.beginPath(); X.ellipse(-8,38,6,16,0,0,Math.PI*2); X.fill();
+  X.beginPath(); X.ellipse(8,38,6,16,0,0,Math.PI*2); X.fill();
+  // 腕（怒り：両手を腰に）
+  X.fillStyle='#2E7D32';
+  X.save(); X.translate(-20,10); X.rotate(0.5);
+  X.beginPath(); X.ellipse(0,13,6,14,0,0,Math.PI*2); X.fill(); X.restore();
+  X.save(); X.translate(20,10); X.rotate(-0.5);
+  X.beginPath(); X.ellipse(0,13,6,14,0,0,Math.PI*2); X.fill(); X.restore();
+  // 胴体（友達と同じサイズ感）
+  X.fillStyle='#2E7D32';
+  X.beginPath(); X.ellipse(0,8,18,20,0,0,Math.PI*2); X.fill();
+  // 首
+  X.fillStyle='#F0BC8A'; X.beginPath(); X.rect(-5,-7,10,12); X.fill();
+  // 耳
+  X.fillStyle='#DDAA78';
+  X.beginPath(); X.arc(-19,-18,7,0,Math.PI*2); X.fill();
+  X.beginPath(); X.arc(19,-18,7,0,Math.PI*2); X.fill();
+  // 頭（怒りぶるぶる）
+  const shk=anger>0?Math.sin(fr*0.65)*3.5:0;
+  X.save(); X.translate(shk,0);
+  X.save(); X.translate(0,-18);
+  drawFaceBase(20,'#F0BC8A');
+  drawCheeks(20);
+  // 怒り眉（太く逆ハの字）
+  X.fillStyle='#2A1008';
+  X.beginPath(); X.moveTo(-12,-10); X.lineTo(-3,-6); X.lineTo(-2,-3); X.lineTo(-11,-7); X.closePath(); X.fill();
+  X.beginPath(); X.moveTo(12,-10); X.lineTo(3,-6); X.lineTo(2,-3); X.lineTo(11,-7); X.closePath(); X.fill();
+  // 目（怒り：白目あり）
+  X.fillStyle='#FFFFFF';
+  X.beginPath(); X.arc(-6,-1,4,0,Math.PI*2); X.fill();
+  X.beginPath(); X.arc(6,-1,4,0,Math.PI*2); X.fill();
+  X.fillStyle='#1A0800';
+  X.beginPath(); X.arc(-6,-1,2.8,0,Math.PI*2); X.fill();
+  X.beginPath(); X.arc(6,-1,2.8,0,Math.PI*2); X.fill();
+  // 怒りまぶた（上まぶたを眉寄りに）
+  X.fillStyle='#F0BC8A';
+  X.beginPath(); X.moveTo(-10,-3); X.lineTo(-2,-1); X.lineTo(-10,0); X.closePath(); X.fill();
+  X.beginPath(); X.moveTo(10,-3); X.lineTo(2,-1); X.lineTo(10,0); X.closePath(); X.fill();
+  // ほっぺ赤み
+  X.fillStyle='rgba(220,60,20,0.32)';
+  X.beginPath(); X.arc(-14,3,7,0,Math.PI*2); X.fill();
+  X.beginPath(); X.arc(14,3,7,0,Math.PI*2); X.fill();
+  // 口（叫び）
+  X.fillStyle='#5A0000';
+  X.beginPath(); X.ellipse(0,10,8,6,0,0,Math.PI*2); X.fill();
+  X.fillStyle='#F0E8D0';
+  X.beginPath(); X.ellipse(-3,10,2.5,2,0,0,Math.PI*2); X.fill();
+  X.beginPath(); X.ellipse(3,10,2.5,2,0,0,Math.PI*2); X.fill();
+  // 髪（上半円のみ・友達と同じ）
+  X.fillStyle='#3A2408';
+  X.beginPath(); X.arc(0,0,21,Math.PI,0,false); X.closePath(); X.fill();
+  X.restore(); // head translate
+  X.restore(); // shake translate
+
+  // 💢マーク（頭の左右）
+  X.font='18px serif'; X.textAlign='center'; X.textBaseline='middle';
+  X.fillText('💢',-28+shk,-52); X.fillText('💢',28+shk,-52);
+
+  // 吹き出し（先生の左上・尻尾は右下→先生の口側を向く）
+  if(anger>28){
+    // 吹き出し本体（先生の左上に配置）
+    X.fillStyle='#FFFFFF'; rr(-148,-102,128,42,9); X.fill();
+    // しっぽ（右下向き・先生の口の方向 = 右側）
+    X.beginPath();
+    X.moveTo(-30,-60);   // 吹き出し右端の下あたり
+    X.lineTo(-10,-45);   // 先生の口へ向かう先端
+    X.lineTo(-30,-50);
+    X.closePath(); X.fillStyle='#FFFFFF'; X.fill();
+    X.fillStyle='#C62828'; X.font='bold 17px sans-serif';
+    X.textAlign='center'; X.textBaseline='middle';
+    X.fillText('こらーっ！！',-84,-81);
+  }
+  X.restore();
+}
+
+// 胴上げの友達
+function drawFriend(tx,ty,col,phase){
+  const armUp=0.55+Math.sin(fr*0.2+phase)*0.38;
+  X.save(); X.translate(tx,ty+Math.sin(fr*0.18+phase)*6);
+  // 影
+  X.fillStyle='rgba(0,0,0,0.08)'; X.beginPath(); X.ellipse(0,58,20,6,0,0,Math.PI*2); X.fill();
+  // 靴
+  X.fillStyle='#2A2A2A'; X.beginPath(); X.ellipse(-8,55,12,6,0,0,Math.PI*2); X.fill(); X.beginPath(); X.ellipse(8,55,12,6,0,0,Math.PI*2); X.fill();
+  // 脚
+  X.fillStyle='#252020'; X.beginPath(); X.ellipse(-8,38,6,16,0,0,Math.PI*2); X.fill(); X.beginPath(); X.ellipse(8,38,6,16,0,0,Math.PI*2); X.fill();
+  // 腕（上げてる）
+  X.fillStyle=col;
+  X.save(); X.translate(-20,6); X.rotate(-Math.PI*armUp);
+  X.beginPath(); X.ellipse(0,13,6,14,0,0,Math.PI*2); X.fill(); X.restore();
+  X.save(); X.translate(20,6); X.rotate(Math.PI*armUp);
+  X.beginPath(); X.ellipse(0,13,6,14,0,0,Math.PI*2); X.fill(); X.restore();
+  // 胴体
+  X.fillStyle=col; X.beginPath(); X.ellipse(0,8,18,20,0,0,Math.PI*2); X.fill();
+  // 首
+  X.fillStyle='#F0BC8A'; X.beginPath(); X.rect(-5,-7,10,12); X.fill();
+  // 耳
+  X.fillStyle='#DDAA78';
+  X.beginPath(); X.arc(-19,-18,7,0,Math.PI*2); X.fill();
+  X.beginPath(); X.arc(19,-18,7,0,Math.PI*2); X.fill();
+  // 頭
+  X.save(); X.translate(0,-18);
+  drawFaceBase(20,'#F0BC8A');
+  drawCheeks(20);
+  // 笑い目（細目）
+  X.fillStyle='#1A1818';
+  X.beginPath(); X.arc(-6,-2,3.5,0,Math.PI*2); X.fill();
+  X.beginPath(); X.arc(6,-2,3.5,0,Math.PI*2); X.fill();
+  X.fillStyle='#F0BC8A'; // まぶた（笑い）
+  X.beginPath(); X.ellipse(-6,-4,4,2,0,0,Math.PI*2); X.fill();
+  X.beginPath(); X.ellipse(6,-4,4,2,0,0,Math.PI*2); X.fill();
+  // 口（笑い）
+  X.strokeStyle='#8A4820'; X.lineWidth=2.5; X.lineCap='round';
+  X.beginPath(); X.arc(0,6,6,0.1,Math.PI-0.1); X.stroke();
+  // 髪
+  X.fillStyle='#2E1A0A';
+  X.beginPath(); X.arc(0,0,21,Math.PI,0,false); X.closePath(); X.fill();
+  X.restore();
+  X.restore();
+}
+
+/* ======================================================
+   描画 ── パーティクル
+====================================================== */
+function drawFX(){
+  parts.forEach(p=>{
+    X.save(); X.globalAlpha=p.life/p.max*0.9;
+    X.beginPath(); X.arc(p.x,p.y,p.r*p.life/p.max,0,Math.PI*2);
+    X.fillStyle=p.col; X.fill(); X.restore();
+  });
+  drops.forEach(d=>{
+    X.save(); X.translate(d.x,d.y); X.rotate(d.rot);
+    switch(d.t){case 0:drawShoeFlat(d.r,'#F0E0C0');break;case 1:drawPingFlat(d.r);break;case 2:drawShuttleFlat(d.r);break;case 3:drawDodgeFlat(d.r);break;case 4:drawVolleyFlat(d.r);break;case 5:drawBasketFlat(d.r);break;}
+    X.restore();
+  });
+  pops.forEach(p=>{
+    X.save(); X.globalAlpha=Math.min(1,p.life/22);
+    X.font='bold 14px sans-serif'; X.textAlign='center'; X.textBaseline='middle';
+    X.fillStyle=p.col; X.shadowColor='rgba(0,0,0,0.45)'; X.shadowBlur=4;
+    X.fillText(p.str,p.x,p.y); X.restore();
+  });
+}
+
+/* ======================================================
+   描画 ── ボタン
+====================================================== */
+function drawBtn(x,y,w,h,label,bg,fgc){
+  X.fillStyle=bg||'#1565C0'; rr(x,y,w,h,12); X.fill();
+  X.fillStyle=fgc||'#FFFFFF'; X.font='bold 16px sans-serif'; X.textAlign='center'; X.textBaseline='middle';
+  X.fillText(label,x+w/2,y+h/2);
+}
+function hitBtn(px,py,x,y,w,h){return px>=x&&px<=x+w&&py>=y&&py<=y+h;}
+
+/* ======================================================
+   描画 ── タイトル
+====================================================== */
+function drawTitle(){
+  const g=X.createLinearGradient(0,0,0,H); g.addColorStop(0,'#181828'); g.addColorStop(1,'#141820');
+  X.fillStyle=g; X.fillRect(0,0,W,H);
+  // 天井っぽい表現
+  X.fillStyle='#BEBEB4'; X.fillRect(0,0,W,14);
+  for(let bx=32;bx<W;bx+=68){X.fillStyle='rgba(80,80,72,0.35)'; X.fillRect(bx-6,0,12,55);}
+  // 床
+  X.fillStyle='#C88828'; X.fillRect(0,H*0.74,W,H*0.26);
+  for(let fx=20;fx<W;fx+=20){X.fillStyle='rgba(100,58,8,0.25)'; X.fillRect(fx-1,H*0.74,2,H*0.26);}
+  X.fillStyle='rgba(255,255,255,0.45)'; X.fillRect(W/2-1.5,H*0.74,3,H*0.26);
+  // タイトル文字（えんじ色シャドウ）
+  X.textAlign='center'; X.textBaseline='middle';
+  X.shadowColor='#9A1822'; X.shadowBlur=28;
+  X.fillStyle='#FFFFFF'; X.font='bold 34px sans-serif';
+  X.fillText('俺の上履き',W/2,H*0.16); X.fillText('どこ行った！',W/2,H*0.26); X.shadowBlur=0;
+  // 揺れる上履き
+  const sy=H*0.44+Math.sin(fr*0.05)*10;
+  X.save(); X.translate(W/2,sy); X.scale(1.85,1.85); X.rotate(Math.sin(fr*0.04)*0.2); drawShoeFlat(17); X.restore();
+  // ？マーク
+  ['#FFD54F','#EF5350','#80CBC4'].forEach((c,i)=>{
+    X.font='bold 26px monospace'; X.fillStyle=c;
+    X.fillText('?',W*0.22+i*W*0.28,H*0.37+Math.sin(fr*0.05+i*2.1)*13);
+  });
+  // スタートボタン（脈打つ）
+  const p=0.93+Math.sin(fr*0.07)*0.055;
+  X.save(); X.translate(W/2,H*0.64); X.scale(p,p);
+  const bg=X.createLinearGradient(0,-28,0,28); bg.addColorStop(0,'#FF6D00'); bg.addColorStop(1,'#E53935');
+  X.fillStyle=bg; rr(-105,-28,210,56,13); X.fill();
+  X.fillStyle='#FFFFFF'; X.font='bold 18px sans-serif'; X.textAlign='center'; X.textBaseline='middle';
+  X.fillText('タップしてスタート！',0,0); X.restore();
+  // 説明
+  X.fillStyle='rgba(160,175,185,0.82)'; X.font='11px sans-serif';
+  X.fillText('スライドで狙いをきめて指を離すと発射！',W/2,H*0.78);
+  X.fillText('天井の 🥿 を全部取り返せ！',W/2,H*0.83);
+}
+
+/* ======================================================
+   描画 ── モード選択
+====================================================== */
+function drawModeSelect(){
+  const g=X.createLinearGradient(0,0,0,H); g.addColorStop(0,'#181828'); g.addColorStop(1,'#141820');
+  X.fillStyle=g; X.fillRect(0,0,W,H);
+  X.fillStyle='#BEBEB4'; X.fillRect(0,0,W,14);
+  X.textAlign='center'; X.textBaseline='middle';
+  X.fillStyle='#FFFFFF'; X.font='bold 28px sans-serif'; X.fillText('モード選択',W/2,H*0.2);
+  X.fillStyle='rgba(150,160,175,0.7)'; X.font='12px sans-serif'; X.fillText('どちらで遊ぶ？',W/2,H*0.29);
+  // ノーマルボタン
+  const nbg=X.createLinearGradient(0,0,0,70); nbg.addColorStop(0,'#1976D2'); nbg.addColorStop(1,'#0D47A1');
+  X.fillStyle=nbg; rr(W/2-115,H*0.38-35,230,70,14); X.fill();
+  X.fillStyle='#FFFFFF'; X.font='bold 20px sans-serif'; X.fillText('ノーマル',W/2,H*0.38-4);
+  X.fillStyle='rgba(180,210,255,0.8)'; X.font='11px sans-serif'; X.fillText('ステージをクリアして進もう！',W/2,H*0.38+18);
+  // エンドレスボタン
+  const ebg=X.createLinearGradient(0,0,0,70); ebg.addColorStop(0,'#E65100'); ebg.addColorStop(1,'#BF360C');
+  X.fillStyle=ebg; rr(W/2-115,H*0.57-35,230,70,14); X.fill();
+  X.fillStyle='#FFFFFF'; X.font='bold 20px sans-serif'; X.fillText('エンドレス',W/2,H*0.57-4);
+  X.fillStyle='rgba(255,200,160,0.8)'; X.font='11px sans-serif'; X.fillText('何ウェーブ耐えられる？スコアに挑戦！',W/2,H*0.57+18);
+  // 戻るボタン
+  X.fillStyle='rgba(100,110,120,0.7)'; rr(W/2-60,H*0.72-20,120,40,10); X.fill();
+  X.fillStyle='#CCCCCC'; X.font='14px sans-serif'; X.fillText('← タイトルへ',W/2,H*0.72);
+}
+
+/* ======================================================
+   描画 ── クリアアニメーション（胴上げ）
+====================================================== */
+function drawClearAnim(){
+  drawGym(); drawHUD('STAGE '+stN,'クリア！',shots,score,goal,goal,false);
+  drawFX();
+  // 紙吹雪追加
+  if(animT<90&&fr%4===0){
+    ['#FF6D00','#FFD54F','#4CAF50','#2196F3','#9C27B0','#F44336'].forEach(c=>{
+      parts.push({x:rnd(0,W),y:rnd(-10,20),vx:rnd(-2,2),vy:rnd(1,4),r:rnd(4,8),col:c,life:rnd(40,80)|0,max:80});
+    });
+  }
+  // 友達（4人）
+  const fCols=['#1976D2','#D32F2F','#388E3C','#7B1FA2'];
+  const fXs=[W/2-90,W/2-30,W/2+30,W/2+90];
+  fXs.forEach((fx,i)=>drawFriend(fx,PY,fCols[i],i*1.1));
+  // プレイヤー（上に飛んでいる）
+  const bounce=Math.sin(animT*0.12)*40+40;
+  X.save(); X.translate(PX,PY-bounce-20); X.scale(1.15,1.15); drawPlayer(); X.restore();
+  // 「ワーッ！」テキスト
+  const ta=animT*0.1; X.font='bold 44px sans-serif'; X.textAlign='center'; X.textBaseline='middle';
+  X.shadowColor='rgba(0,0,0,0.3)'; X.shadowBlur=10;
+  X.fillStyle='#FFFFFF';
+  X.save(); X.translate(W/2,H*0.14+Math.sin(ta)*5); X.rotate(Math.sin(ta)*0.06);
+  X.fillText('🎉 クリア！',0,0); X.restore(); X.shadowBlur=0;
+  X.font='bold 18px monospace'; X.fillStyle='#FFD54F'; X.fillText('SCORE: '+score,W/2,H*0.23);
+  // ボタン（90フレーム後にフェードイン）
+  if(animT>88){
+    const a=Math.min(1,(animT-88)/20); X.save(); X.globalAlpha=a;
+    drawBtn(W/2-110,H*0.55,220,52,stN<999?'次のステージへ →':'続ける →','#1565C0');
+    drawBtn(W/2-80,H*0.63,160,44,'もう一度','#546E7A');
+    drawBtn(W/2-70,H*0.70,140,40,'タイトルへ','#37474F');
+    X.restore();
+  }
+}
+
+/* ======================================================
+   描画 ── ゲームオーバーアニメーション（先生）
+====================================================== */
+function drawOverAnim(){
+  drawGym(); drawHUD('STAGE '+stN,'ゲームオーバー',0,score,got,goal,false);
+  drawFX(); drawPlayer();
+  // 先生が右から入ってくる
+  const targetX=W*0.72;
+  teachX+=(targetX-teachX)*0.07;
+  drawTeacher(teachX, animT>30?animT-30:0);
+  // 画面揺れ（animT 10〜40）
+  if(animT>8&&animT<45){
+    X.save();
+    X.fillStyle=`rgba(200,30,30,${0.12*Math.sin(animT*0.5)})`;
+    X.fillRect(0,0,W,H); X.restore();
+  }
+  // タイトル
+  if(animT>25){
+    const a=Math.min(1,(animT-25)/20);
+    X.save(); X.globalAlpha=a;
+    X.textAlign='center'; X.textBaseline='middle';
+    X.fillStyle='#ECEFF1'; X.font='16px sans-serif'; X.fillText('上履きを取り返せなかった…',W/2,H*0.38);
+    X.fillStyle='#FFD54F'; X.font='bold 17px monospace'; X.fillText('SCORE: '+score,W/2,H*0.46);
+    X.restore();
+  }
+  // ボタン（80フレーム後）
+  if(animT>78){
+    const a=Math.min(1,(animT-78)/20); X.save(); X.globalAlpha=a;
+    drawBtn(W/2-90,H*0.57,180,50,'もう一度','#C62828');
+    drawBtn(W/2-80,H*0.65,160,44,'タイトルへ','#37474F');
+    X.restore();
+  }
+}
+
+/* ======================================================
+   描画 ── エンドレス ゲームオーバー
+====================================================== */
+function drawEndlessOver(){
+  const g=X.createLinearGradient(0,0,0,H); g.addColorStop(0,'#120B00'); g.addColorStop(1,'#1A0E06');
+  X.fillStyle=g; X.fillRect(0,0,W,H);
+  drawTeacher(W*0.7,60);
+  X.textAlign='center'; X.textBaseline='middle';
+  X.shadowColor='rgba(180,0,0,0.7)'; X.shadowBlur=16;
+  X.fillStyle='#EF5350'; X.font='bold 34px sans-serif'; X.fillText('💢 こらーっ！！',W/2,H*0.28); X.shadowBlur=0;
+  X.fillStyle='#FFFFFF'; X.font='bold 18px sans-serif'; X.fillText('取れた上履き：'+got+'個！',W/2,H*0.39);
+  X.fillStyle='#FFD54F'; X.font='bold 22px monospace'; X.fillText('SCORE: '+eScore,W/2,H*0.49);
+  if(animT>50){
+    const a=Math.min(1,(animT-50)/20); X.save(); X.globalAlpha=a;
+    drawBtn(W/2-90,H*0.58,180,50,'もう一度','#E65100');
+    drawBtn(W/2-80,H*0.67,160,44,'タイトルへ','#37474F');
+    X.restore();
+  }
+}
+
+/* ======================================================
+   UPDATE
+====================================================== */
+function updateFX(){
+  for(let i=parts.length-1;i>=0;i--){const p=parts[i];p.x+=p.vx;p.y+=p.vy;p.vy+=0.11;p.life--;if(p.life<=0)parts.splice(i,1);}
+  for(let i=pops.length-1;i>=0;i--){const p=pops[i];p.y+=p.vy;p.life--;if(p.life<=0)pops.splice(i,1);}
+  for(let i=drops.length-1;i>=0;i--){const d=drops[i];d.y+=d.vy;d.vy+=0.46;d.x+=d.vx||0;d.rot+=0.1;if(d.y>H+80)drops.splice(i,1);}
+}
+
+function evolveObj(idx){
+  const o=objs[idx]; if(!o) return;
+  if(o.t>=5){
+    // バスケットボールは最終形態→落下させる
+    drops.push({...o,vy:0.8,vx:rnd(-1.5,1.5),rot:0});
+    objs.splice(idx,1);
+    burst(o.x,o.y,'#FF6200',10,false);
+    popTxt(o.x,o.y-36,'ゴール！','#FF6200');
+    return;
+  }
+  o.t++; o.r=IR[o.t];
+  const pts=EP[o.t]; score+=pts; eScore+=pts;
+  burst(o.x,o.y,['','#F5F5EE','#FFF9C4','#EF5350','#F5F5F5','#FF6200'][o.t]||'#FFD54F',10,false);
+  popTxt(o.x,o.y-36,IN[o.t]+'！',['','#90A4AE','#F9A825','#EF5350','#1565C0','#FF6200'][o.t]);
+  if(o.t===5){drops.push({...o,vy:0.8,vx:rnd(-1.5,1.5),rot:0});objs.splice(idx,1);}
+}
+
+function updatePlay(isEndless){
+  if(joy>0) joy--;
+  updateFX();
+  for(let i=drops.length-1;i>=0;i--){if(drops[i].y>H+80)drops.splice(i,1);}
+
+  // 発射物
+  if(proj){
+    proj.x+=proj.vx; proj.y+=proj.vy;
+    if(proj.x-proj.r<WL){proj.x=WL+proj.r;proj.vx=Math.abs(proj.vx);}
+    if(proj.x+proj.r>WR){proj.x=WR-proj.r;proj.vx=-Math.abs(proj.vx);}
+    if(!proj.ret){
+      for(let i=0;i<objs.length;i++){
+        const o=objs[i];
+        const by=Math.sin(fr*0.025+o.bob)*2.5;
+        if(Math.hypot(proj.x-o.x,proj.y-(o.y+by))<proj.r+o.r+2){
+          if(o.t===0){
+            objs.splice(i,1); got++;
+            const pts=120*(isEndless?eWave:stN);
+            score+=pts; eScore+=pts;
+            if(isEndless){proj.hitShoe=true; popTxt(proj.x,proj.y-38,'GET! +'+pts,'#FFD54F');}
+            else          {popTxt(proj.x,proj.y-38,'GET! +'+pts,'#FFD54F');}
+            burst(proj.x,proj.y,'#FFD54F',16,true); joy=55;
+          } else {
+            const ang=Math.atan2((o.y+by)-proj.y,o.x-proj.x);
+            o.vx+=Math.cos(ang)*4.8; o.vy+=Math.sin(ang)*0.9; o.hit=32;
+            evolveObj(i);
+          }
+          proj.ret=true; proj.vy=2.8; proj.vx*=0.35; break;
+        }
+      }
+      if(proj&&proj.y-proj.r<CTOP+2){proj.ret=true; proj.vy=2.8; proj.vx*=0.5; burst(proj.x,proj.y,'#90A4AE',6,false);}
+    } else {
+      proj.vy+=0.36;
+      if(proj.y>H+50){
+        if(isEndless && !proj.hitShoe) eShots--;  // 上履きに当てなかったときだけ残数を消費
+        proj=null;
+      }
+    }
+  }
+
+  // 天井オブジェクト物理
+  for(let i=0;i<objs.length;i++){
+    const o=objs[i];
+    o.x+=o.vx; o.vx*=0.82; o.y+=o.vy*0.2; o.vy*=0.82;
+    if(o.hit>0)o.hit--;
+    o.x=Math.max(WL+o.r,Math.min(WR-o.r,o.x));
+    o.y=Math.max(CTOP+o.r,Math.min(CBOT-o.r,o.y));
+  }
+  // 衝突・マージ
+  for(let i=0;i<objs.length;i++){
+    for(let j=i+1;j<objs.length;j++){
+      if(!objs[i]||!objs[j]) continue;
+      const dx=objs[j].x-objs[i].x, dy=objs[j].y-objs[i].y;
+      const dist=Math.hypot(dx,dy); const minD=objs[i].r+objs[j].r+4;
+      if(dist<minD&&dist>0.1){
+        if(objs[i].t===objs[j].t&&objs[i].t!==0){
+          const mx=(objs[i].x+objs[j].x)/2, my=(objs[i].y+objs[j].y)/2;
+          objs.splice(j,1); objs[i].x=mx; objs[i].y=my; objs[i].vx=0; objs[i].vy=0;
+          evolveObj(i); i=-1; break;
+        } else {
+          const push=(minD-dist)/2, nx=dx/dist||0, ny=dy/dist||0;
+          objs[i].vx-=nx*push*0.38; objs[j].vx+=nx*push*0.38;
+          objs[i].x-=nx*push*0.5; objs[j].x+=nx*push*0.5;
+          objs[i].y-=ny*push*0.3; objs[j].y+=ny*push*0.3;
+        }
+      }
+    }
+  }
+}
+
+/* ======================================================
+   メインループ（1本のみ）
+====================================================== */
+function loop(){
+  fr++;
+  X.clearRect(0,0,W,H);
+
+  switch(scene){
+    case 'title':
+      drawTitle(); break;
+
+    case 'mode':
+      drawModeSelect(); break;
+
+    case 'play':
+      updatePlay(false);
+      drawGym();
+      drawHUD('STAGE '+stN,'🥿 上履きを全部回収せよ！',shots,score,got,goal,false);
+      drawAim(); objs.forEach(drawItem); drawFX();
+      if(proj){X.save();X.translate(proj.x,proj.y);X.rotate(fr*0.32);X.scale(0.78,0.78);drawShoeFlat(17);X.restore();}
+      drawPlayer();
+      // ゲームオーバー・クリア判定
+      if(got>=goal){scene='clearAnim';animT=0;score+=shots*20;}
+      else if(shots<=0&&proj===null){scene='overAnim';animT=0;teachX=W+120;teachAnger=0;}
+      break;
+
+    case 'clearAnim':
+      animT++;
+      drawClearAnim();
+      break;
+
+    case 'overAnim':
+      animT++;
+      drawOverAnim();
+      break;
+
+    case 'endless':
+      updatePlay(true);
+      drawGym();
+      drawHUD('ENDLESS','🥿 5回蹴って何個取れる？',eShots,eScore,got,99,true);
+      drawAim(); objs.forEach(drawItem); drawFX();
+      if(proj){X.save();X.translate(proj.x,proj.y);X.rotate(fr*0.32);X.scale(0.78,0.78);drawShoeFlat(17);X.restore();}
+      drawPlayer();
+      // 上履きが全部なくなったら補充
+      if(objs.filter(o=>o.t===0).length===0&&proj===null&&eShots>0){
+        const oldObjs=objs.filter(o=>o.t!==0);
+        spawnWave(1); objs=[...oldObjs,...objs];
+      }
+      // エンドレスゲームオーバー
+      if(eShots<=0&&proj===null){scene='endlessOver';animT=0;}
+      break;
+
+    case 'endlessOver':
+      animT++;
+      updateFX();
+      drawEndlessOver();
+      drawFX();
+      break;
+  }
+
+  requestAnimationFrame(loop);
+}
+
+/* ======================================================
+   入力
+====================================================== */
+function getPos(e){
+  const r=C.getBoundingClientRect();
+  const s=e.touches?e.touches[0]:e;
+  return{x:(s.clientX-r.left)*(W/r.width), y:(s.clientY-r.top)*(H/r.height)};
+}
+function setAim(p){
+  const dx=p.x-PX, dy=p.y-(PY-28);
+  if(dy>=-4) return;
+  let a=Math.atan2(dy,dx);
+  a=Math.max(-Math.PI+0.12,Math.min(-0.12,a));
+  aimA=a;
+}
+function fire(){
+  if(proj) return;
+  const sh=(scene==='endless')?eShots:shots;
+  if(sh<=0) return;
+  if(scene!=='endless') shots--;   // 通常モードは発射時に減らす
+  // エンドレスは上履きに当てなかったときだけ減らす（下のupdatePlayで処理）
+  proj={x:PX,y:PY-28,vx:Math.cos(aimA)*SPD,vy:Math.sin(aimA)*SPD,r:14,ret:false,hitShoe:false};
+}
+
+function onDown(e){
+  e.preventDefault(); ptrDown=true;
+  const p=getPos(e);
+  // タイトル
+  if(scene==='title'){
+    if(p.y>H*0.58&&p.y<H*0.73){scene='mode';}
+    return;
+  }
+  // モード選択
+  if(scene==='mode'){
+    if(hitBtn(p.x,p.y,W/2-115,H*0.38-35,230,70)){stN=1;score=0;initStage(1);scene='play';}
+    else if(hitBtn(p.x,p.y,W/2-115,H*0.57-35,230,70)){initEndless();scene='endless';}
+    else if(hitBtn(p.x,p.y,W/2-60,H*0.72-20,120,40)){scene='title';}
+    return;
+  }
+  // プレイ中：エイム開始
+  if(scene==='play'||scene==='endless'){aimed=true; setAim(p); return;}
+  // クリアアニメ
+  if(scene==='clearAnim'&&animT>88){
+    const ny=p.y/H;
+    if(ny>0.54&&ny<0.62){stN++;score=0;initStage(stN);scene='play';}
+    else if(ny>0.62&&ny<0.70){initStage(stN);scene='play';}
+    else if(ny>0.69&&ny<0.76){scene='title';}
+    return;
+  }
+  // ゲームオーバーアニメ
+  if(scene==='overAnim'&&animT>78){
+    if(p.y/H>0.56&&p.y/H<0.63){initStage(stN);scene='play';}
+    else if(p.y/H>0.64&&p.y/H<0.71){scene='title';}
+    return;
+  }
+  // エンドレスオーバー
+  if(scene==='endlessOver'&&animT>50){
+    if(p.y/H>0.57&&p.y/H<0.64){initEndless();scene='endless';}
+    else if(p.y/H>0.66&&p.y/H<0.73){scene='title';}
+    return;
+  }
+}
+function onMove(e){
+  e.preventDefault();
+  if(!ptrDown) return;
+  if(scene==='play'||scene==='endless') setAim(getPos(e));
+}
+function onUp(e){
+  e.preventDefault();
+  if(!ptrDown) return;
+  ptrDown=false;
+  if((scene==='play'||scene==='endless')&&aimed){ aimed=false; fire(); }
+}
+
+C.addEventListener('pointerdown', onDown, {passive:false});
+C.addEventListener('pointermove', onMove, {passive:false});
+C.addEventListener('pointerup',   onUp,   {passive:false});
+C.addEventListener('pointercancel',()=>{ptrDown=false;aimed=false;},{passive:false});
+
+/* ======================================================
+   スタート
+====================================================== */
+requestAnimationFrame(loop);
+
+}());
+</script>
+</body>
+</html>
