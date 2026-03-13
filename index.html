@@ -914,7 +914,6 @@ function evolveObj(idx){
 function updatePlay(isEndless){
   if(joy>0) joy--;
   updateFX();
-  for(let i=drops.length-1;i>=0;i--){if(drops[i].y>H+80)drops.splice(i,1);}
 
   // 発射物
   if(proj){
@@ -1029,8 +1028,9 @@ function loop(){
         const oldObjs=objs.filter(o=>o.t!==0);
         spawnWave(1); objs=[...oldObjs,...objs];
       }
-      // エンドレスゲームオーバー
-      if(eShots<=0&&proj===null){scene='endlessOver';animT=0;}
+      // エンドレスゲームオーバー：バスケ落下中は待つ
+      const basketStillFalling = drops.some(d=>d.t===5);
+      if(eShots<=0&&proj===null&&!basketStillFalling){scene='endlessOver';animT=0;}
       break;
 
     case 'endlessOver':
