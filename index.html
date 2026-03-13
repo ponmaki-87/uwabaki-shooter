@@ -20,9 +20,14 @@ canvas{display:block}
 ====================================================== */
 const C=document.getElementById('gc');
 const X=C.getContext('2d');
-const W=Math.min(window.innerWidth,400);
-const H=Math.min(window.innerHeight,860);
+const W=Math.max(300, Math.min(window.innerWidth  || document.documentElement.clientWidth  || 400, 400));
+const H=Math.max(500, Math.min(window.innerHeight || document.documentElement.clientHeight || 860, 860));
 C.width=W; C.height=H;
+C.style.width=W+'px'; C.style.height=H+'px';
+window.addEventListener('error',function(e){
+  X.fillStyle='#fff'; X.font='14px sans-serif';
+  X.fillText('Error: '+(e.message||'unknown'), 10, 30);
+});
 
 const HUD=92, CTOP=HUD+6, CBOT=HUD+168, FLOOR=H-55;
 const PX=W/2, PY=FLOOR-55, WL=10, WR=W-10, SPD=13;
@@ -877,7 +882,16 @@ function drawEndlessOver(){
 function updateFX(){
   for(let i=parts.length-1;i>=0;i--){const p=parts[i];p.x+=p.vx;p.y+=p.vy;p.vy+=0.11;p.life--;if(p.life<=0)parts.splice(i,1);}
   for(let i=pops.length-1;i>=0;i--){const p=pops[i];p.y+=p.vy;p.life--;if(p.life<=0)pops.splice(i,1);}
-  for(let i=drops.length-1;i>=0;i--){const d=drops[i];d.y+=d.vy;d.vy+=0.46;d.x+=d.vx||0;d.rot+=0.1;if(d.y>H+80)drops.splice(i,1);}
+  for(let i=drops.length-1;i>=0;i--){
+    const d=drops[i]; d.y+=d.vy; d.vy+=0.46; d.x+=d.vx||0; d.rot+=0.1;
+    if(d.y>H+80){
+      if(d.t===5){  // バスケットボールが落ちた→上履き+1
+        shots++; eShots++;
+        popTxt(W/2, FLOOR-80, '🥿 +1！', '#FFD54F');
+      }
+      drops.splice(i,1);
+    }
+  }
 }
 
 function evolveObj(idx){
